@@ -34,6 +34,7 @@ TIER_NAMES = {'SAFE': 'Safe', 'ELEVATED': 'Elevated', 'CRITICAL': 'Critical'}
 TIER_DISPLAY_COLORS = {TIER_NAMES[t]: c for t, c in TIER_COLORS.items()}
 MODEL_LABELS = {'LightGBM': 'LightGBM (in use)', 'Neural network (MLP)': 'Neural network', 'Sequence network (GRU)': 'Sequence network',
                 'Convolutional network (CNN)': 'Convolutional network', 'LightGBM with PCA': 'LightGBM on compressed features'}
+COMPARISON_EVENTS = 6655    # test-like development events scored by model_comparison.py
 CHANCE_TICKS = dict(tickvals=[-12, -10, -8, -6, -4, -2], ticktext=['1 in a trillion', '1 in 10 billion', '1 in 100 million', '1 in a million', '1 in 10,000', '1 in 100'])
 CLEAN = dict(margin=dict(l=0, r=0, t=36, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
 NO_BAR = {'displayModeBar': False}
@@ -245,6 +246,19 @@ with tab_model:
         col.markdown(f'**{model}**')
     met = D['metrics']
     held = met[met.scope == 'Test-like events'].set_index('system')
+    cmp = D['comparison']
+    if cmp is not None:
+        cmp = cmp[cmp['mode'].isin(['with forecast', 'benchmark'])].copy()
+        cmp['name'] = cmp.model.replace(MODEL_LABELS)
+        in_use = cmp[cmp.model == 'LightGBM'].iloc[0]
+        rival = cmp[(cmp['mode'] == 'with forecast') & (cmp.model != 'LightGBM')].iloc[0]       # file is sorted, best first
+        simple = cmp[cmp.model == 'Current tier carried forward'].iloc[0]
+        st.subheader('Why LightGBM?')
+        st.markdown(f"""
+- **Level with the best at catching Critical events:** {in_use.critical_caught:.1%}, against {rival.critical_caught:.1%} for {rival['name'].lower()}. That gap is too small to separate.
+- **More of its alerts were right than its closest rival:** {in_use.critical_right:.1%}, against {rival.critical_right:.1%}.
+- **Catches more than the simple approach:** {in_use.critical_caught:.1%}, against {simple.critical_caught:.1%}.
+""")
     st.subheader('Does the forecast beat the simple approach?')
     order = ['Final system', 'Distance forecast only', 'Current tier carried forward', 'Worst-case figure and distance']
     st.dataframe(pd.DataFrame({'System': order,
@@ -254,25 +268,43 @@ with tab_model:
                  hide_index=True, width='stretch')
     conf = D['confusion']
     st.caption(f'Scored on {int(conf.values.sum()):,} past events held back from training.')
-    if D['comparison'] is not None:
-        cmp = D['comparison']
-        cmp = cmp[cmp['mode'].isin(['with forecast', 'benchmark'])].copy()
-        cmp['name'] = cmp.model.replace(MODEL_LABELS)
+    if cmp is not None:
+        final_score = held.critical_caught['Final system']
+        critical_held = int(conf.loc['CRITICAL'].sum())
+        critical_dev = int(round(in_use.critical_alerts * in_use.critical_right / in_use.critical_caught))
+        st.subheader(f'Why does LightGBM show {in_use.critical_caught:.0%} below but {final_score:.0%} above?')
+        c = st.columns(2)
+        c[0].metric('Model comparison', f'{in_use.critical_caught:.1%}')
+        c[0].caption(f'{critical_dev} Critical events across {COMPARISON_EVENTS:,} past events')
+        c[1].metric('Final test', f'{final_score:.1%}')
+        c[1].caption(f'{critical_held} Critical events across {int(conf.values.sum()):,} past events, kept out of model choices')
+        st.markdown(f"These are the same LightGBM system tested on different past events. With {critical_held} Critical events, one event moves the "
+                    f"final test by about 1 point, so **{in_use.critical_caught:.0%} to {final_score:.0%}** is the fair way to describe it.")
         st.subheader('All models compared')
         left, right = st.columns([1.2, 1])
         left.dataframe(pd.DataFrame({'Model': cmp.name, 'Critical events caught': cmp.critical_caught.map('{:.1%}'.format),
                                      'Critical alerts that were right': cmp.critical_right.map('{:.1%}'.format),
                                      'Overall score': cmp.overall.map('{:.1%}'.format)}), hide_index=True, width='stretch', height=458)
-        cmp['group'] = np.where(cmp.model == 'LightGBM', 'In use', np.where(cmp['mode'] == 'benchmark', 'Simple approach', 'Other models'))
+        most_right = cmp.loc[cmp.critical_right.idxmax()]
+        cmp['group'] = np.where(cmp.model == 'LightGBM', 'In use', np.where(cmp.model == most_right.model, 'Most alerts right',
+                                np.where(cmp['mode'] == 'benchmark', 'Simple approach', 'Other models')))
         fig = px.scatter(cmp, x='critical_right', y='critical_caught', color='group', custom_data=['name'],
-                         color_discrete_map={'In use': '#4c6ef5', 'Simple approach': '#e9a23b', 'Other models': '#adb5bd'},
+                         color_discrete_map={'In use': '#4c6ef5', 'Most alerts right': '#2a9d8f', 'Simple approach': '#e9a23b', 'Other models': '#adb5bd'},
                          labels={'critical_right': 'Critical alerts that were right', 'critical_caught': 'Critical events caught'})
         fig.update_traces(marker_size=11, hovertemplate='%{customdata[0]}<br>Caught %{y:.1%}, right %{x:.1%}<extra></extra>')
         fig.update_layout(height=458, title='More caught, more false alarms', xaxis_tickformat='.0%', yaxis_tickformat='.0%',
-                          legend=dict(orientation='h', y=1.08, x=1, xanchor='right', title=''), **CLEAN)
+                          legend=dict(orientation='h', y=-0.2, x=0, title=''), **CLEAN)
         right.plotly_chart(fig, width='stretch', config=NO_BAR)
         st.caption('Each model escalates events on top of the distance forecast. Scored on past training events by five-fold testing, '
                    'not on the held-back events. The top models are too close to separate.')
+        st.subheader('Which has the most Critical alerts right?')
+        added = cmp[cmp['mode'] == 'with forecast'].sort_values('critical_right', ascending=False).iloc[0]
+        c = st.columns(2)
+        c[0].metric(f"Highest overall: {most_right['name']}", f'{most_right.critical_right:.1%}')
+        c[0].caption(f'Catches {most_right.critical_caught:.1%} of Critical events')
+        c[1].metric(f"Highest added model: {added['name']}", f'{added.critical_right:.1%}')
+        c[1].caption(f'Catches {added.critical_caught:.1%} of Critical events')
+        st.markdown(f'These are more often right because they raise fewer alerts, so they catch fewer Critical events than LightGBM ({in_use.critical_caught:.1%}).')
     names = [TIER_NAMES[t] for t in TIERS]
     ct = conf.loc[TIERS, TIERS].set_axis(names).set_axis(names, axis=1)
     fig = px.imshow(ct, text_auto=',', color_continuous_scale='Blues', labels=dict(x='System said', y='Actual', color='Events'))
