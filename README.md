@@ -3,7 +3,7 @@ Autonomous AI hackathon 2026
 
 Airbus Challenge #1: AI-driven satellite collision avoidance.
 
-The project is in [`collision-risk-evaluator/`](collision-risk-evaluator/). Its README covers results, how it works and how to run it.
+The project is in [`collision-risk-evaluator/`](collision-risk-evaluator/). Its README covers results and how it works, and the [User Guide](collision-risk-evaluator/USER_GUIDE.md) explains how to run and use the dashboard.
 
 ## Quick start
 ```bash

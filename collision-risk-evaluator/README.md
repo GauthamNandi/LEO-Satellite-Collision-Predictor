@@ -45,10 +45,11 @@ pip install -r requirements.txt
 # copy train_data.csv, test_data.csv and challenge1_event_labels.xlsx into data/
 jupyter nbconvert --to notebook --execute --inplace collision_risk_pipeline.ipynb   # ~6 min on a laptop CPU
 python final_tier_pipeline.py
-python model_comparison.py   # optional, ~5 min
+python model_comparison.py   # optional, takes several minutes
 streamlit run dashboard/app.py
 ```
 `outputs/` already contains the results of the executed notebook, so the dashboard runs straight away without re-training.
+nSee the [User Guide](USER_GUIDE.md) for how to run and use the dashboard.
 
 ## How it works
 
