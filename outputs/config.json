@@ -1,0 +1,36 @@
+{
+  "best_model": "Ensemble (top-3)",
+  "crit_cut": -4.0,
+  "elev_cut": -6.25,
+  "net_floor": -6.0,
+  "y_floor": -10.0,
+  "exec_lead_days": 0.5,
+  "human_min_days": 1.0,
+  "selected_features": [
+    "max_risk_estimate",
+    "mre_cummax",
+    "mre_first",
+    "log_miss",
+    "log_miss_prev",
+    "log_miss_cummin",
+    "log_abs_r",
+    "log_abs_n",
+    "time_to_tca",
+    "cdm_index",
+    "log_abs_t",
+    "log_r_over_sigma",
+    "mre_trend",
+    "log_miss_over_sigma",
+    "obj_PAYLOAD",
+    "log_c_sigma_r",
+    "mre_delta",
+    "obj_UNKNOWN",
+    "log_t_sigma_r"
+  ],
+  "pca_components": 13,
+  "mc": {
+    "t_factor": 100.0,
+    "n_factor": 80.0,
+    "hbr": 50.0
+  }
+}
