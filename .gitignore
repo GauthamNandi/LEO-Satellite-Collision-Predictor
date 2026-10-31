@@ -3,6 +3,9 @@ train_data.csv
 test_data.csv
 
 # Notebook outputs and Python cruft
-outputs/
+/outputs/
 __pycache__/
 .ipynb_checkpoints/
+
+# Working copy of the official labels; the project uses collision-risk-evaluator/data/
+/challenge1_event_labels.xlsx

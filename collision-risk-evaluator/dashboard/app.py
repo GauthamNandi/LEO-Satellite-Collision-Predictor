@@ -2,6 +2,8 @@
 
 Run from the repo root after executing the notebook:
     streamlit run dashboard/app.py
+
+All visible text avoids acronyms: say "closest approach", "collision chance", "update" and "speed change".
 """
 import json
 import sys
@@ -15,264 +17,264 @@ import streamlit as st
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
-from risk_utils import (ACTION_COLORS, ACTION_TEXT, ACTIONS, EXEC_LEAD_DAYS, HUMAN_MIN_DAYS, TIER_COLORS, TIERS,  # noqa: E402
-                        along_track_shift_m, dv_required_mm_s, mc_pc)
+from risk_utils import (ACTION_COLORS, ACTION_LABELS, ACTION_TEXT, ACTIONS, EXEC_LEAD_DAYS, HUMAN_MIN_DAYS, OBJECT_LABELS,  # noqa: E402
+                        TIER_COLORS, TIERS, along_track_shift_m, chance_percent, chance_text, dv_required_mm_s, duration_text, mc_pc,
+                        recommended_actions)
 
 OUT = BASE / 'outputs'
-st.set_page_config(page_title='Collision Risk Evaluator', page_icon='🛰️', layout='wide')
+st.set_page_config(page_title='Collision Risk Monitor', page_icon='🛰️', layout='wide')
 st.markdown("""<style>
-.block-container {padding-top: 1.6rem;}
-div[data-testid="stMetricValue"] {font-size: 1.7rem;}
-.action-card {border-radius: 10px; padding: 14px 18px; color: white; margin-bottom: 10px;}
-.action-card h3 {margin: 0 0 4px 0; color: white;}
+.block-container {padding-top: 2rem;}
+div[data-testid="stMetricValue"] {font-size: 1.9rem;}
 </style>""", unsafe_allow_html=True)
+
+BADGES = {'AUTONOMOUS': 'violet', 'URGENT': 'red', 'PLAN': 'orange', 'REVIEW': 'yellow', 'MONITOR': 'blue', 'NO ACTION': 'green'}
+FILTERS = {'Manoeuvre needed': ['AUTONOMOUS', 'URGENT', 'PLAN'], 'Analyst review': ['REVIEW'], 'Monitoring': ['MONITOR'], 'Safe': ['NO ACTION']}
+TIER_NAMES = {'SAFE': 'Safe', 'ELEVATED': 'Elevated', 'CRITICAL': 'Critical'}
+TIER_DISPLAY_COLORS = {TIER_NAMES[t]: c for t, c in TIER_COLORS.items()}
+MODEL_LABELS = {'LightGBM': 'LightGBM (in use)', 'Neural network (MLP)': 'Neural network', 'Sequence network (GRU)': 'Sequence network',
+                'Convolutional network (CNN)': 'Convolutional network', 'LightGBM with PCA': 'LightGBM on compressed features'}
+CHANCE_TICKS = dict(tickvals=[-12, -10, -8, -6, -4, -2], ticktext=['1 in a trillion', '1 in 10 billion', '1 in 100 million', '1 in a million', '1 in 10,000', '1 in 100'])
+CLEAN = dict(margin=dict(l=0, r=0, t=36, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+NO_BAR = {'displayModeBar': False}
 
 
 @st.cache_data
 def load():
-    need = ['predictions_test.csv', 'event_summary_test.csv', 'config.json']
-    missing = [f for f in need if not (OUT / f).exists()]
-    if missing:
+    need = ['predictions_test.csv', 'config.json', 'final_tier_test.csv', 'final_tier_metrics.csv', 'final_tier_confusion.csv']
+    if any(not (OUT / f).exists() for f in need):
         return None
-    p = pd.read_csv(OUT / 'predictions_test.csv')
-    ev = pd.read_csv(OUT / 'event_summary_test.csv')
-    cfg = json.load(open(OUT / 'config.json'))
     opt = lambda f, **kw: pd.read_csv(OUT / f, **kw) if (OUT / f).exists() else None
-    return dict(p=p, ev=ev, cfg=cfg, comp=opt('final_comparison_test.csv', index_col=0), metrics=opt('test_metrics.csv', index_col=0),
-                w24=opt('warnings_24h_train.csv'), trans=opt('tier_transition_train.csv'), esc=opt('escalation_timing_train.csv'))
+    return dict(p=pd.read_csv(OUT / 'predictions_test.csv'), fin=pd.read_csv(OUT / 'final_tier_test.csv'), cfg=json.load(open(OUT / 'config.json')),
+                metrics=pd.read_csv(OUT / 'final_tier_metrics.csv'), confusion=pd.read_csv(OUT / 'final_tier_confusion.csv', index_col=0),
+                comparison=opt('final_tier_model_comparison.csv'), w24=opt('warnings_24h_train.csv'), esc=opt('escalation_timing_train.csv'))
+
+
+@st.cache_data
+def simulate(rel, t_sigma, c_sigma, shift):
+    return mc_pc(list(rel), t_sigma, c_sigma, shift_t_m=shift, n=2_000_000, seed=1, **D['cfg'].get('mc', {}))
+
+
+def limit_lines(fig):
+    fig.add_hline(y=-4, line_dash='dash', line_color=TIER_COLORS['CRITICAL'], annotation_text='Critical', annotation_position='top left')
+    fig.add_hline(y=-6, line_dash='dash', line_color=TIER_COLORS['ELEVATED'], annotation_text='Elevated', annotation_position='top left')
+
+
+def trajectory_chart(g):
+    """Estimated position of the other object at closest approach, one point per update."""
+    pos = g[['relative_position_r', 'relative_position_t', 'relative_position_n']].values / 1e3
+    reach = max(1.2, 1.15 * np.abs(pos).max())
+    u, v = np.mgrid[0:2 * np.pi:30j, 0:np.pi:15j]
+    fig = go.Figure()
+    for rad, colr, op in [(1, TIER_COLORS['CRITICAL'], .12), (5, TIER_COLORS['ELEVATED'], .05)]:
+        if rad <= 2.5 * reach:
+            fig.add_trace(go.Surface(x=rad * np.cos(u) * np.sin(v), y=rad * np.sin(u) * np.sin(v), z=rad * np.cos(v), opacity=op,
+                                     showscale=False, colorscale=[[0, colr], [1, colr]], hoverinfo='skip'))
+    fig.add_trace(go.Scatter3d(x=pos[:, 1], y=pos[:, 2], z=pos[:, 0], mode='lines+markers', line=dict(color='#495057', width=4),
+                               marker=dict(size=5, color='#4c6ef5'), text=[f'{t:.1f} days before' for t in g.time_to_tca],
+                               hovertemplate='%{text}<extra></extra>'))
+    fig.add_trace(go.Scatter3d(x=[0], y=[0], z=[0], mode='markers', marker=dict(size=4, color='black', symbol='diamond'),
+                               hovertemplate='Our satellite<extra></extra>'))
+    rng = [-reach, reach]
+    fig.update_layout(scene=dict(xaxis=dict(title='Along track (km)', range=rng), yaxis=dict(title='Sideways (km)', range=rng),
+                                 zaxis=dict(title='Up or down (km)', range=rng), aspectmode='cube'),
+                      height=420, margin=dict(l=0, r=0, t=0, b=0), showlegend=False)
+    return fig
+
+
+def reset_selection():
+    st.session_state.selection_round += 1      # new widget keys clear the selection, so the same event can be reopened
+
+
+def event_panel(eid):
+    g = D['p'][D['p'].event_id == eid].sort_values('time_to_tca', ascending=False)
+    last = pd.concat([g.iloc[-1].drop(['action', 'reaction_budget_days']), D['fin'].set_index('event_id').loc[eid]])
+    why, steps = recommended_actions(last, g)
+
+    st.badge(ACTION_LABELS[last.action], color=BADGES[last.action])
+    st.markdown(f'**{ACTION_TEXT[last.action]}**')
+    c = st.columns(3)
+    c[0].metric('Forecast final tier', TIER_NAMES[last.forecast_tier])
+    c[1].metric('Chance of ending Critical', chance_percent(last.chance_critical))
+    if last.forecast_tier == 'CRITICAL':
+        c[2].metric('Decide within', duration_text(last.reaction_budget_days))
+    else:
+        c[2].metric('Closest approach in', duration_text(last.time_to_tca))
+
+    actions, risk, path, trial = st.tabs(['Next actions', 'Risk over time', 'Flight path', 'Try a manoeuvre'])
+    with actions:
+        st.markdown('\n'.join(f'{i}. {s}' for i, s in enumerate(steps, 1)))
+        st.caption('Why: ' + ' '.join(why))
+        st.caption(f'Latest update: {last.miss_distance / 1e3:,.2f} km apart, collision chance {chance_text(last.pred_pc)}.')
+    with risk:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=g.time_to_tca, y=g.pred_log10_pc, mode='lines+markers', name='Model estimate', line=dict(color='#4c6ef5', width=2)))
+        fig.add_trace(go.Scatter(x=g.time_to_tca, y=g.max_risk_estimate, mode='lines+markers', name='Worst case', line=dict(color='#868e96', width=2, dash='dot')))
+        limit_lines(fig)
+        fig.update_layout(title='Collision chance', xaxis_title='Days before closest approach', xaxis_autorange='reversed', yaxis=CHANCE_TICKS,
+                          height=280, legend=dict(orientation='h', y=1.12, x=1, xanchor='right'), **CLEAN)
+        st.plotly_chart(fig, width='stretch', config=NO_BAR)
+        fig = go.Figure(go.Scatter(x=g.time_to_tca, y=g.miss_distance / 1e3, mode='lines+markers', line=dict(color='#495057', width=2), name='Miss distance'))
+        fig.add_hline(y=1, line_dash='dash', line_color=TIER_COLORS['CRITICAL'])
+        fig.add_hline(y=5, line_dash='dash', line_color=TIER_COLORS['ELEVATED'])
+        fig.update_layout(title='Miss distance (km)', xaxis_title='Days before closest approach', xaxis_autorange='reversed', height=220, **CLEAN)
+        st.plotly_chart(fig, width='stretch', config=NO_BAR)
+    with path:
+        st.plotly_chart(trajectory_chart(g), width='stretch')
+        st.caption('Each point is one update on where the other object will be at closest approach. Spheres mark 1 km and 5 km.')
+    with trial:
+        need = float(dv_required_mm_s(max(5000 - last.miss_mid, 500), last.time_to_tca))
+        a, b = st.columns(2)
+        speed = a.slider('Speed change (mm/s)', 0.0, 30.0, min(30.0, np.ceil(need * 4) / 4), 0.25)
+        top = float(max(0.5, round(last.time_to_tca, 1)))
+        lead = b.slider('Days before closest approach', 0.1, top, top, 0.1)
+        rel = (last.relative_position_r, last.relative_position_t, last.relative_position_n)
+        shift = float(along_track_shift_m(speed, lead))
+        before, low0 = simulate(rel, last.t_sigma_r, last.c_sigma_r, 0.0)
+        after, low1 = simulate(rel, last.t_sigma_r, last.c_sigma_r, shift)
+        k = st.columns(3)
+        k[0].metric('Chance without manoeuvre', ('Under ' if low0 else '') + chance_text(before))
+        k[1].metric('Chance after manoeuvre', ('Under ' if low1 else '') + chance_text(after))
+        k[2].metric('Added distance', f'{shift / 1e3:.2f} km')
+        st.caption('Monte Carlo simulation of 2 million possible positions, for comparing options. Its figures can differ from the model estimate.')
 
 
 D = load()
 if D is None:
-    st.error('No results found in `outputs/`. Run `collision_risk_pipeline.ipynb` first.')
+    st.error('No results found. Run the notebook first.')
     st.stop()
-p, ev, cfg = D['p'], D['ev'], D['cfg']
-SEV = {a: i for i, a in enumerate(ACTIONS)}
+p = D['p']
+st.session_state.setdefault('selection_round', 0)
+latest = p.sort_values('time_to_tca').groupby('event_id').head(1).copy()       # most recent message per event
+latest = latest.drop(columns=['action', 'reaction_budget_days']).merge(D['fin'], on='event_id')
+latest['sev'] = latest.action.map({a: i for i, a in enumerate(ACTIONS)})
 
-# ------------------------------------------------------------------ header
-st.title('🛰️ Satellite Collision Risk Evaluator')
-st.caption(f"Model: **{cfg['best_model']}** + upper-bound safety net · tier cut-offs on predicted log10(Pc): "
-           f"Critical ≥ {cfg['crit_cut']}, Elevated ≥ {cfg['elev_cut']} · scope: test set, {p.event_id.nunique():,} conjunction events, "
-           f"{len(p):,} CDMs (all ≥ 2 days before TCA)")
+st.title('🛰️ Collision Risk Monitor')
+st.caption('Forecast by LightGBM. Full details are under Model performance.')
+tab_now, tab_ins, tab_model = st.tabs(['Events', 'Insights', 'Model performance'])
 
-tab_ops, tab_ev, tab_ins, tab_model = st.tabs(['Operations overview', 'Event explorer', '24 h warnings & insights', 'Model performance'])
+# ================================================================== EVENTS
+with tab_now:
+    c = st.columns(4)
+    for col, (name, acts) in zip(c, FILTERS.items()):
+        col.metric(name, f'{int(latest.action.isin(acts).sum()):,}')
 
-latest = p.sort_values('time_to_tca').groupby('event_id').head(1).copy()       # most recent CDM per event
-latest['sev'] = latest.action.map(SEV)
-first_flag = ev.set_index('event_id').first_critical_flag_days
+    choice = st.segmented_control('Show', list(FILTERS), default='Manoeuvre needed', label_visibility='collapsed') or 'Manoeuvre needed'
+    q = latest[latest.action.isin(FILTERS[choice])].sort_values(['sev', 'chance_critical'], ascending=[True, False])
+    table = pd.DataFrame({'Event': q.event_id.values,
+                          'Next step': q.action.map(ACTION_LABELS).values,
+                          'Other object': q.c_object_type.map(OBJECT_LABELS).values,
+                          'Forecast final tier': q.forecast_tier.map(TIER_NAMES).values,
+                          'Chance of ending Critical': q.chance_critical.map(chance_percent).values,
+                          'Forecast final distance (km)': (q.miss_mid / 1e3).round(2).values,
+                          'Closest approach in (days)': q.time_to_tca.round(1).values})
+    st.caption('Forecasts of how each event will end. Test events have no known outcome, so these are demo predictions. Click an event to see what to do next.')
+    colors = {ACTION_LABELS[a]: ACTION_COLORS[a] for a in ACTIONS}
+    picked = st.dataframe(table.style.format({'Forecast final distance (km)': '{:,.2f}', 'Closest approach in (days)': '{:.1f}'})
+                          .apply(lambda s: [f'background-color: {colors[v]}33' for v in s], subset=['Next step']),
+                          height=360, width='stretch', hide_index=True, on_select='rerun', selection_mode='single-row',
+                          key=f'queue_{choice}_{st.session_state.selection_round}')
 
-# ================================================================== OPERATIONS
-with tab_ops:
-    c = st.columns(6)
-    c[0].metric('Events tracked', f'{len(latest):,}')
-    c[1].metric('Critical now', int((latest.final_tier == 'CRITICAL').sum()))
-    c[2].metric('Autonomous / urgent', f"{int((latest.action == 'AUTONOMOUS').sum())} / {int((latest.action == 'URGENT').sum())}")
-    c[3].metric('Manoeuvre planning', int((latest.action == 'PLAN').sum()))
-    c[4].metric('Analyst review queue', int((latest.action == 'REVIEW').sum()))
-    c[5].metric('Median warning lead time', f'{first_flag.median():.1f} d')
+    st.subheader('Risk map')
+    m = latest.assign(miss_km=latest.miss_mid / 1e3, Tier=latest.forecast_tier.map(TIER_NAMES), chance=latest.pred_pc.map(chance_text),
+                      y=latest.pred_log10_pc.clip(lower=-12))
+    fig = px.scatter(m, x='miss_km', y='y', color='Tier', color_discrete_map=TIER_DISPLAY_COLORS, log_x=True, opacity=.7, render_mode='svg',
+                     category_orders={'Tier': ['Critical', 'Elevated', 'Safe']}, custom_data=['event_id', 'chance'],
+                     labels={'miss_km': 'Forecast final distance (km)', 'y': 'Collision chance now'})
+    fig.update_traces(marker_size=8, hovertemplate='Event %{customdata[0]}<br>%{customdata[1]}<br>%{x:.1f} km<extra></extra>')
+    fig.update_layout(height=380, yaxis=CHANCE_TICKS, xaxis=dict(tickvals=[.1, 1, 5, 10, 50], ticktext=['0.1', '1', '5', '10', '50']), legend=dict(orientation='h', y=1.1, x=1, xanchor='right', title=''), **CLEAN)
+    clicked = st.plotly_chart(fig, width='stretch', config=NO_BAR, on_select='rerun', selection_mode='points',
+                              key=f'map_{st.session_state.selection_round}')
 
-    left, right = st.columns([1.55, 1])
-    with left:
-        st.subheader('Priority queue')
-        f1, f2 = st.columns(2)
-        acts = f1.multiselect('Action', ACTIONS, default=['AUTONOMOUS', 'URGENT', 'PLAN', 'REVIEW'])
-        objs = f2.multiselect('Object type', sorted(latest.c_object_type.unique()), default=sorted(latest.c_object_type.unique()))
-        q = latest[latest.action.isin(acts) & latest.c_object_type.isin(objs)].sort_values(['sev', 'pred_log10_pc'], ascending=[True, False])
-        show = q[['event_id', 'action', 'final_tier', 'c_object_type', 'pred_pc', 'miss_distance', 'time_to_tca', 'reaction_budget_days']].rename(
-            columns={'event_id': 'event', 'final_tier': 'tier', 'c_object_type': 'object', 'pred_pc': 'predicted Pc',
-                     'miss_distance': 'miss (m)', 'time_to_tca': 'TCA in (d)', 'reaction_budget_days': 'decide within (d)'})
-        st.dataframe(show.style.format({'predicted Pc': '{:.1e}', 'miss (m)': '{:,.0f}', 'TCA in (d)': '{:.2f}', 'decide within (d)': '{:.2f}'})
-                     .apply(lambda s: [f'background-color: {ACTION_COLORS[v]}33' for v in s], subset=['action']),
-                     height=420, width='stretch', hide_index=True)
-        st.caption(f'{len(q)} events · "decide within" = time to TCA − {EXEC_LEAD_DAYS} d needed to uplink and execute a burn')
-    with right:
-        st.subheader('Where the events stand')
-        ac = latest.action.value_counts().reindex(ACTIONS).fillna(0).reset_index()
-        ac.columns = ['action', 'events']
-        fig = px.bar(ac, x='events', y='action', orientation='h', color='action', color_discrete_map=ACTION_COLORS, text='events')
-        fig.update_layout(showlegend=False, height=260, margin=dict(l=0, r=10, t=10, b=0), yaxis=dict(categoryorder='array', categoryarray=ACTIONS[::-1]))
-        st.plotly_chart(fig, width='stretch')
-        to = pd.crosstab(latest.c_object_type, latest.final_tier).reindex(columns=TIERS).fillna(0).reset_index().melt(id_vars='c_object_type')
-        fig = px.bar(to, y='c_object_type', x='value', color='final_tier', orientation='h', color_discrete_map=TIER_COLORS,
-                     labels={'value': 'events', 'c_object_type': ''})
-        fig.update_layout(height=250, margin=dict(l=0, r=10, t=10, b=0), legend=dict(orientation='h', y=-0.25, title=''))
-        st.plotly_chart(fig, width='stretch')
-
-    st.subheader('Risk map — latest CDM per event')
-    fig = px.scatter(latest.assign(miss_km=latest.miss_distance / 1e3), x='miss_km', y='pred_log10_pc', color='final_tier',
-                     color_discrete_map=TIER_COLORS, hover_data=['event_id', 'c_object_type', 'action', 'time_to_tca'], log_x=True,
-                     labels={'miss_km': 'miss distance (km, log)', 'pred_log10_pc': 'predicted log10(Pc)'}, opacity=.7)
-    for y, col in [(-4, TIER_COLORS['CRITICAL']), (-6, TIER_COLORS['ELEVATED'])]:
-        fig.add_hline(y=y, line_dash='dash', line_color=col)
-    for x, col in [(1, TIER_COLORS['CRITICAL']), (5, TIER_COLORS['ELEVATED'])]:
-        fig.add_vline(x=x, line_dash='dash', line_color=col)
-    fig.update_layout(height=380, margin=dict(l=0, r=0, t=10, b=0))
-    st.plotly_chart(fig, width='stretch')
-
-# ================================================================== EVENT EXPLORER
-with tab_ev:
-    order = latest.sort_values(['sev', 'pred_log10_pc'], ascending=[True, False])
-    labels = {r.event_id: f'Event {r.event_id} · {r.action} · {r.c_object_type} · Pc {r.pred_pc:.1e}' for r in order.itertuples()}
-    eid = st.selectbox('Event (sorted by priority)', list(labels), format_func=labels.get)
-    g = p[p.event_id == eid].sort_values('time_to_tca', ascending=False)
-    last = g.iloc[-1]
-
-    a, b = st.columns([1, 2.2])
-    with a:
-        col = ACTION_COLORS[last.action]
-        st.markdown(f"""<div class="action-card" style="background:{col}"><h3>{last.action}</h3>{ACTION_TEXT[last.action]}</div>""",
-                    unsafe_allow_html=True)
-        m = st.columns(2)
-        m[0].metric('Final tier', last.final_tier)
-        m[1].metric('Predicted Pc', f'{last.pred_pc:.1e}')
-        m[0].metric('Miss distance', f'{last.miss_distance:,.0f} m')
-        m[1].metric('Time to TCA', f'{last.time_to_tca:.2f} d')
-        m[0].metric('Decide within', f'{max(last.reaction_budget_days, 0):.2f} d')
-        ff = first_flag.get(eid, np.nan)
-        m[1].metric('First Critical flag', '—' if pd.isna(ff) else f'{ff:.2f} d before TCA')
-        need = max(5000 - last.miss_distance, 500)
-        st.caption(f'Δv to open separation to 5 km: **{dv_required_mm_s(need, last.time_to_tca):.2f} mm/s** if executed now, '
-                   f'**{dv_required_mm_s(need, 0.5):.1f} mm/s** if left until T−12 h.')
-        show_truth = st.toggle('Show ground-truth Pc (evaluation only)', value=False)
-    with b:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=g.time_to_tca, y=g.pred_log10_pc, mode='lines+markers', name='predicted log10(Pc)', line=dict(color='#4c6ef5')))
-        fig.add_trace(go.Scatter(x=g.time_to_tca, y=g.max_risk_estimate, mode='lines+markers', name='max_risk_estimate (upper bound)',
-                                 line=dict(color='#868e96', dash='dot')))
-        if show_truth:
-            fig.add_trace(go.Scatter(x=g.time_to_tca, y=g.true_log10_pc.clip(lower=-10), mode='lines+markers', name='true log10(Pc)', line=dict(color='black')))
-        fig.add_hline(y=-4, line_dash='dash', line_color=TIER_COLORS['CRITICAL'], annotation_text='Critical 1e-4')
-        fig.add_hline(y=-6, line_dash='dash', line_color=TIER_COLORS['ELEVATED'], annotation_text='Elevated 1e-6')
-        fig.update_layout(title='Collision probability as CDMs arrive', xaxis_title='days to TCA', yaxis_title='log10(Pc)',
-                          xaxis_autorange='reversed', height=300, margin=dict(l=0, r=0, t=40, b=0), legend=dict(orientation='h', y=-0.3))
-        st.plotly_chart(fig, width='stretch')
-        fig = go.Figure(go.Scatter(x=g.time_to_tca, y=g.miss_distance / 1e3, mode='lines+markers', line=dict(color='#2b2d42'),
-                                   marker=dict(color=[TIER_COLORS[t] for t in g.final_tier], size=9), name='miss distance'))
-        fig.add_hline(y=1, line_dash='dash', line_color=TIER_COLORS['CRITICAL']); fig.add_hline(y=5, line_dash='dash', line_color=TIER_COLORS['ELEVATED'])
-        fig.update_layout(title='Predicted miss distance per CDM (marker colour = tier)', xaxis_title='days to TCA', yaxis_title='km',
-                          xaxis_autorange='reversed', height=260, margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig, width='stretch')
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader('Encounter geometry (RTN frame)')
-        u, v = np.mgrid[0:2 * np.pi:30j, 0:np.pi:15j]
-        fig = go.Figure()
-        reach = max(1.2, 1.15 * np.abs(g[['relative_position_r', 'relative_position_t', 'relative_position_n']].values).max() / 1e3)
-        for rad, colr, op in [(1, TIER_COLORS['CRITICAL'], .10), (5, TIER_COLORS['ELEVATED'], .04)]:
-            if rad > 2.5 * reach:
-                continue
-            fig.add_trace(go.Surface(x=rad * np.cos(u) * np.sin(v), y=rad * np.sin(u) * np.sin(v), z=rad * np.cos(v), opacity=op,
-                                     showscale=False, colorscale=[[0, colr], [1, colr]], name=f'{rad} km', hoverinfo='skip'))
-        fig.add_trace(go.Scatter3d(x=g.relative_position_t / 1e3, y=g.relative_position_n / 1e3, z=g.relative_position_r / 1e3,
-                                   mode='lines+markers', marker=dict(size=6, color=g.time_to_tca, colorscale='Viridis_r', colorbar=dict(title='days<br>to TCA')),
-                                   line=dict(color='#495057', width=4), name='miss-vector estimate',
-                                   text=[f'{t:.2f} d before TCA' for t in g.time_to_tca]))
-        fig.add_trace(go.Scatter3d(x=[0], y=[0], z=[0], mode='markers', marker=dict(size=4, color='black', symbol='diamond'), name='our satellite'))
-        rng = [-reach, reach]
-        fig.update_layout(scene=dict(xaxis=dict(title='T (km)', range=rng), yaxis=dict(title='N (km)', range=rng),
-                                     zaxis=dict(title='R (km)', range=rng), aspectmode='cube'),
-                          height=430, margin=dict(l=0, r=0, t=0, b=0), showlegend=False)
-        st.plotly_chart(fig, width='stretch')
-        st.caption('Each point is where one CDM predicts the debris will be, relative to our satellite, at closest approach. '
-                   'The track shows how the estimate converges as CDMs arrive (spheres: 1 km and 5 km).')
-    with c2:
-        st.subheader('Manoeuvre what-if (Monte Carlo)')
-        dv = st.slider('Along-track Δv (mm/s)', 0.0, 30.0, 2.0, 0.25)
-        lead = st.slider('Burn executed this many days before TCA', 0.1, float(max(0.5, round(last.time_to_tca, 1))),
-                         float(min(2.0, round(last.time_to_tca, 1))), 0.1)
-        rel = [last.relative_position_r, last.relative_position_t, last.relative_position_n]
-
-        @st.cache_data
-        def _mc(rel, ts, cs, shift):
-            return mc_pc(list(rel), ts, cs, shift_t_m=shift, n=400_000, seed=1, **cfg.get('mc', {}))
-
-        pc0, b0 = _mc(tuple(rel), last.t_sigma_r, last.c_sigma_r, 0.0)
-        shift = float(along_track_shift_m(dv, lead))
-        pc1, b1 = _mc(tuple(rel), last.t_sigma_r, last.c_sigma_r, shift)
-        k = st.columns(3)
-        k[0].metric('Pc, no manoeuvre (MC)', ('< ' if b0 else '') + f'{pc0:.1e}')
-        k[1].metric('Pc after burn (MC)', ('< ' if b1 else '') + f'{pc1:.1e}', delta=f'{np.log10(pc1) - np.log10(pc0):+.1f} decades', delta_color='inverse')
-        k[2].metric('Added separation', f'{shift / 1e3:.2f} km')
-        dvs = np.array([0, 0.5, 1, 2, 4, 8, 15, 30])
-        rows = []
-        for ld in sorted({3.0, 1.0, 0.5, round(lead, 1)}):
-            rows += [{'Δv (mm/s)': d, 'lead': f'{ld} d', 'log10 Pc': np.log10(_mc(tuple(rel), last.t_sigma_r, last.c_sigma_r,
-                                                                                float(along_track_shift_m(d, ld)))[0])} for d in dvs]
-        fig = px.line(pd.DataFrame(rows), x='Δv (mm/s)', y='log10 Pc', color='lead', markers=True)
-        fig.add_hline(y=-4, line_dash='dash', line_color=TIER_COLORS['CRITICAL']); fig.add_hline(y=-6, line_dash='dash', line_color=TIER_COLORS['ELEVATED'])
-        fig.add_hline(y=np.log10(3 / 400_000), line_dash='dot', line_color='grey', annotation_text='MC resolution floor', annotation_position='bottom right')
-        fig.update_layout(height=270, margin=dict(l=0, r=0, t=10, b=0), legend=dict(orientation='h', y=-0.3))
-        st.plotly_chart(fig, width='stretch')
-        mcp = cfg.get('mc', {})
-        st.caption(f"Gaussian position uncertainty: σR from the CDM radial sigmas, σT = {mcp.get('t_factor', '?'):g}·σR, σN = {mcp.get('n_factor', '?'):g}·σR, "
-                   f"hard-body radius {mcp.get('hbr', '?'):g} m (calibrated on training data); along-track drift ≈ 3·Δv·t. "
-                   'Illustrative what-if only: the risk tier comes from the ML model, not this simulation.')
+    eid = None
+    if picked.selection.rows:
+        eid = int(table.Event.iloc[picked.selection.rows[0]])
+    elif clicked.selection.points:
+        eid = int(clicked.selection.points[0]['customdata'][0])
+    if eid is not None:
+        st.dialog(f'Event {eid}', width='large', on_dismiss=reset_selection)(event_panel)(eid)
 
 # ================================================================== INSIGHTS
 with tab_ins:
-    w24, trans, esc = D['w24'], D['trans'], D['esc']
+    w24, esc = D['w24'], D['esc']
     if w24 is not None:
-        st.subheader('Last 24 hours before closest approach (full training history)')
+        st.subheader('Final 24 hours before closest approach')
         c = st.columns(4)
-        c[0].metric('Events with a CDM in final 24 h', f'{len(w24):,}')
-        c[1].metric('Within 1 km (Critical)', int((w24.miss_distance < 1000).sum()))
-        c[2].metric('Within 5 km', int((w24.miss_distance <= 5000).sum()))
-        c[3].metric('Pc ≥ 1e-4', int((w24.risk >= -4).sum()))
-        l, r = st.columns(2)
-        with l:
-            fig = px.histogram(w24.assign(miss_km=w24.miss_distance / 1e3).query('miss_km < 30'), x='miss_km', nbins=60, color='tier',
-                               color_discrete_map=TIER_COLORS, labels={'miss_km': 'miss distance of final CDM (km)'})
-            fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), title='Miss distance in the final 24 h', bargap=.05)
-            st.plotly_chart(fig, width='stretch')
-        with r:
-            if trans is not None:
-                ct = pd.crosstab(trans.tier_2d, trans.tier_final).reindex(index=TIERS, columns=TIERS).fillna(0)
-                fig = px.imshow(ct, text_auto=True, color_continuous_scale='Blues', labels=dict(x='tier in final 24 h', y='tier ≥ 2 days out', color='events'))
-                fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), title='How tiers change from 2 days out to the final day')
-                st.plotly_chart(fig, width='stretch')
+        c[0].metric('Events', f'{len(w24):,}')
+        c[1].metric('Within 5 km', f'{int((w24.miss_distance <= 5000).sum()):,}')
+        c[2].metric('Within 1 km', f'{int((w24.miss_distance < 1000).sum()):,}')
+        c[3].metric('Chance of 1 in 10,000 or higher', f'{int((w24.risk >= -4).sum()):,}')
+        st.caption('From past events in the training data, because the test data stops 2 days before closest approach.')
     if esc is not None:
-        st.subheader('Does a human have time to react?')
+        st.subheader('Is there time to react?')
+        n = len(esc)
+        auto = int((esc.first_crit_tca < EXEC_LEAD_DAYS).sum())
+        urgent = int(((esc.first_crit_tca >= EXEC_LEAD_DAYS) & (esc.first_crit_tca < EXEC_LEAD_DAYS + HUMAN_MIN_DAYS)).sum())
+        crit = latest[latest.forecast_tier == 'CRITICAL']
+        gap = (5000 - crit.miss_mid).clip(lower=500)
+        now_dv, late_dv = dv_required_mm_s(gap, crit.time_to_tca), dv_required_mm_s(gap, 0.5)
+        c = st.columns(3)
+        c[0].metric('Time for a person to decide', f'{(n - auto - urgent) / n:.0%}')
+        c[1].metric('Urgent decision', f'{urgent / n:.1%}')
+        c[2].metric('Too late for a person', f'{auto / n:.1%}')
         l, r = st.columns(2)
         with l:
             fig = px.histogram(esc, x='first_crit_tca', nbins=28, color_discrete_sequence=[TIER_COLORS['CRITICAL']],
-                               labels={'first_crit_tca': 'days before TCA the event first became Critical'})
-            fig.add_vrect(x0=0, x1=EXEC_LEAD_DAYS, fillcolor=ACTION_COLORS['AUTONOMOUS'], opacity=.15, annotation_text='autonomous', line_width=0)
-            fig.add_vrect(x0=EXEC_LEAD_DAYS, x1=EXEC_LEAD_DAYS + HUMAN_MIN_DAYS, fillcolor=ACTION_COLORS['URGENT'], opacity=.12, annotation_text='urgent', line_width=0)
-            fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), xaxis_autorange='reversed', title='When events first turn Critical')
-            st.plotly_chart(fig, width='stretch')
+                               labels={'first_crit_tca': 'Days before closest approach'})
+            fig.update_layout(height=320, xaxis_autorange='reversed', yaxis_title='Events', title='When events first turn critical', bargap=.05, **CLEAN)
+            fig.update_traces(hovertemplate='%{x} days: %{y} events<extra></extra>')
+            st.plotly_chart(fig, width='stretch', config=NO_BAR)
         with r:
             lead = np.linspace(0.1, 7, 150)
-            df = pd.concat([pd.DataFrame({'lead (days)': lead, 'Δv (mm/s)': dv_required_mm_s(s, lead), 'separation': f'+{s // 1000} km'})
-                            for s in (1000, 2000, 5000)])
-            fig = px.line(df, x='lead (days)', y='Δv (mm/s)', color='separation', log_y=True)
-            fig.add_vrect(x0=0, x1=EXEC_LEAD_DAYS, fillcolor=ACTION_COLORS['AUTONOMOUS'], opacity=.15, line_width=0)
-            fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), xaxis_autorange='reversed', title='The cost of waiting: Δv vs lead time')
-            st.plotly_chart(fig, width='stretch')
-        n = len(esc)
-        auto = (esc.first_crit_tca < EXEC_LEAD_DAYS).sum()
-        urgent = ((esc.first_crit_tca >= EXEC_LEAD_DAYS) & (esc.first_crit_tca < EXEC_LEAD_DAYS + HUMAN_MIN_DAYS)).sum()
-        evx = ev.dropna(subset=['dv_at_first_flag'])
-        st.markdown(f"""
-**Key insights**
-- **{(n - auto - urgent) / n:.0%}** of events that turn Critical do so with ≥ {EXEC_LEAD_DAYS + HUMAN_MIN_DAYS:.1f} days to go — a human has time; median decision budget **{esc.reaction_budget_days.median():.1f} days**.
-- **{urgent / n:.1%}** need an urgent human call, and **{auto / n:.1%}** ({auto} events) become Critical inside {EXEC_LEAD_DAYS} days — too late for a human, the case for autonomy with operator veto.
-- On test events the system raises the first Critical flag a median **{first_flag.median():.1f} days** before TCA (minimum {first_flag.min():.1f} d).
-- Acting at the first flag needs a median **{evx.dv_at_first_flag.median():.1f} mm/s** to reach 5 km separation; waiting until T−12 h needs **{evx.dv_at_12h.median():.0f} mm/s** (≈{(evx.dv_at_12h / evx.dv_at_first_flag).median():.0f}× more).
-""")
-        st.caption(f'Assumed execution lead {EXEC_LEAD_DAYS} d and human decision time {HUMAN_MIN_DAYS} d (edit in risk_utils.py).')
+            fig = go.Figure(go.Scatter(x=lead, y=dv_required_mm_s(5000, lead), mode='lines', line=dict(color='#4c6ef5', width=2),
+                                       hovertemplate='%{x:.1f} days: %{y:.1f} mm/s<extra></extra>'))
+            fig.update_layout(height=320, xaxis_autorange='reversed', yaxis_type='log', yaxis_dtick=1, xaxis_title='Days before closest approach',
+                              yaxis_title='Speed change (mm/s)', title='Waiting costs fuel: speed change for 5 km of distance', **CLEAN)
+            st.plotly_chart(fig, width='stretch', config=NO_BAR)
+        st.markdown(f'For events forecast Critical, acting now needs about **{np.median(now_dv):.1f} mm/s**. '
+                    f'Waiting until 12 hours before needs about **{np.median(late_dv / now_dv):.0f} times more**.')
 
 # ================================================================== MODEL
 with tab_model:
-    comp, met = D['comp'], D['metrics']
-    if comp is not None:
-        st.subheader('Final system vs baseline (test set)')
-        st.dataframe(comp.style.format({c: '{:.3f}' for c in comp.columns if c != 'critical_alerts'}), width='stretch')
-    if met is not None:
-        st.subheader('All models (test set, ML tier only)')
-        cols = ['macro_f1', 'critical_recall', 'critical_precision', 'pc_macro_f1', 'pc_critical_recall', 'rmse_highrisk']
-        st.dataframe(met[cols].sort_values('macro_f1', ascending=False).style.format('{:.3f}').background_gradient(cmap='Greens', subset=['macro_f1', 'pc_macro_f1']),
-                     width='stretch')
-    for img, cap in [('final_confusion_test.png', 'Final system — confusion matrix'), ('confusion_matrices_test.png', 'Every model — confusion matrices')]:
-        if (OUT / img).exists():
-            st.image(str(OUT / img), caption=cap)
+    st.subheader('Models in use')
+    used = st.columns(3)
+    for col, (job, model) in zip(used, [('Final distance forecast', 'LightGBM quantile regression'),
+                                        ('Chance of ending Critical', 'LightGBM classifier'),
+                                        ('Collision chance now', 'Combined model: sequence network, neural network and LightGBM')]):
+        col.caption(job)
+        col.markdown(f'**{model}**')
+    met = D['metrics']
+    held = met[met.scope == 'Test-like events'].set_index('system')
+    st.subheader('Does the forecast beat the simple approach?')
+    order = ['Final system', 'Distance forecast only', 'Current tier carried forward', 'Worst-case figure and distance']
+    st.dataframe(pd.DataFrame({'System': order,
+                               'Overall score': [f'{held.overall[o]:.1%}' for o in order],
+                               'Critical events caught': [f'{held.critical_caught[o]:.1%}' for o in order],
+                               'Critical alerts that were right': [f'{held.critical_right[o]:.1%}' for o in order]}),
+                 hide_index=True, width='stretch')
+    conf = D['confusion']
+    st.caption(f'Scored on {int(conf.values.sum()):,} past events held back from training.')
+    if D['comparison'] is not None:
+        cmp = D['comparison']
+        cmp = cmp[cmp['mode'].isin(['with forecast', 'benchmark'])].copy()
+        cmp['name'] = cmp.model.replace(MODEL_LABELS)
+        st.subheader('All models compared')
+        left, right = st.columns([1.2, 1])
+        left.dataframe(pd.DataFrame({'Model': cmp.name, 'Critical events caught': cmp.critical_caught.map('{:.1%}'.format),
+                                     'Critical alerts that were right': cmp.critical_right.map('{:.1%}'.format),
+                                     'Overall score': cmp.overall.map('{:.1%}'.format)}), hide_index=True, width='stretch', height=458)
+        cmp['group'] = np.where(cmp.model == 'LightGBM', 'In use', np.where(cmp['mode'] == 'benchmark', 'Simple approach', 'Other models'))
+        fig = px.scatter(cmp, x='critical_right', y='critical_caught', color='group', custom_data=['name'],
+                         color_discrete_map={'In use': '#4c6ef5', 'Simple approach': '#e9a23b', 'Other models': '#adb5bd'},
+                         labels={'critical_right': 'Critical alerts that were right', 'critical_caught': 'Critical events caught'})
+        fig.update_traces(marker_size=11, hovertemplate='%{customdata[0]}<br>Caught %{y:.1%}, right %{x:.1%}<extra></extra>')
+        fig.update_layout(height=458, title='More caught, more false alarms', xaxis_tickformat='.0%', yaxis_tickformat='.0%',
+                          legend=dict(orientation='h', y=1.08, x=1, xanchor='right', title=''), **CLEAN)
+        right.plotly_chart(fig, width='stretch', config=NO_BAR)
+        st.caption('Each model escalates events on top of the distance forecast. Scored on past training events by five-fold testing, '
+                   'not on the held-back events. The top models are too close to separate.')
+    names = [TIER_NAMES[t] for t in TIERS]
+    ct = conf.loc[TIERS, TIERS].set_axis(names).set_axis(names, axis=1)
+    fig = px.imshow(ct, text_auto=',', color_continuous_scale='Blues', labels=dict(x='System said', y='Actual', color='Events'))
+    fig.update_layout(height=380, title='Final system: right and wrong calls', coloraxis_showscale=False, **CLEAN)
+    st.plotly_chart(fig, width='stretch', config=NO_BAR)

@@ -1,0 +1,50 @@
+{
+  "critical_threshold": 0.22,
+  "review_min_chance": 0.1,
+  "features": [
+    "n_msgs",
+    "last_t",
+    "span",
+    "log_miss",
+    "log_speed",
+    "log_t_sig",
+    "log_c_sig",
+    "mre",
+    "F10",
+    "AP",
+    "log_r",
+    "log_t",
+    "log_n",
+    "miss_min",
+    "miss_max",
+    "miss_std",
+    "miss_slope",
+    "mre_max",
+    "mre_first",
+    "mre_slope",
+    "sig_slope",
+    "sig_drop",
+    "miss_last_jump",
+    "miss_over_sig",
+    "to_1km",
+    "to_5km",
+    "o_DEBRIS",
+    "o_PAYLOAD",
+    "o_ROCKET_BODY",
+    "o_UNKNOWN"
+  ],
+  "interval_vs_carried": {
+    "overall": [
+      -0.027,
+      0.012
+    ],
+    "critical_caught": [
+      0.022,
+      0.121
+    ],
+    "critical_right": [
+      -0.144,
+      -0.042
+    ]
+  }
+}

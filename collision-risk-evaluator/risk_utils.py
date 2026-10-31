@@ -45,11 +45,15 @@ ACTION_COLORS = {'AUTONOMOUS': '#7b2cbf', 'URGENT': '#d1495b', 'PLAN': '#f08c00'
 ACTION_TEXT = {
     'AUTONOMOUS': 'No time for a human decision: execute the pre-planned avoidance manoeuvre automatically; operator keeps a veto.',
     'URGENT': 'Human decision needed now: an avoidance plan is prepared automatically and armed.',
-    'PLAN': 'Analyst plans a manoeuvre; there is time for a considered decision and new CDMs.',
-    'REVIEW': 'Model is uncertain (near a threshold): analyst checks this CDM.',
-    'MONITOR': 'Elevated: no action yet, re-assess on the next CDM.',
-    'NO ACTION': 'Safe.',
+    'PLAN': 'There is time for a considered decision, so an analyst plans a manoeuvre.',
+    'REVIEW': 'The model is unsure, so an analyst should check this event.',
+    'MONITOR': 'No action yet. Check again when the next update arrives.',
+    'NO ACTION': 'This event is safe.',
 }
+ACTION_LABELS = {'AUTONOMOUS': 'Automatic manoeuvre', 'URGENT': 'Decide now', 'PLAN': 'Plan manoeuvre',
+                 'REVIEW': 'Analyst review', 'MONITOR': 'Monitor', 'NO ACTION': 'No action'}
+OBJECT_LABELS = {'DEBRIS': 'Debris', 'PAYLOAD': 'Satellite', 'ROCKET BODY': 'Rocket body', 'UNKNOWN': 'Unknown', 'TBA': 'Unknown'}
+TARGET_PC = 3.1e-6      # NASA handbook: cut Pc by at least 1.5 orders of magnitude (1e-4 -> 3.1e-6)
 
 
 def reaction_budget_days(time_to_tca):
@@ -80,6 +84,68 @@ def dv_required_mm_s(separation_m, lead_days):
 
 def along_track_shift_m(dv_mm_s, lead_days):
     return 3.0 * (np.asarray(dv_mm_s, float) / 1e3) * np.asarray(lead_days, float) * 86400.0
+
+# ---------------------------------------------------------------- plain-language event advice
+def chance_text(pc):
+    """Collision probability as '1 in 12,000' (two significant figures)."""
+    if not pc > 0 or pc < 1e-9:
+        return 'Below 1 in a billion'
+    if pc >= 0.5:
+        return 'Above 1 in 2'
+    return f'1 in {float(f"{1 / pc:.2g}"):,.0f}'
+
+
+def duration_text(days):
+    """Days as '5 days 6 hours' or '18 hours'."""
+    hours = int(round(max(float(days), 0) * 24))
+    d, h = divmod(hours, 24)
+    unit = lambda n, name: f'{n} {name}' + ('' if n == 1 else 's')
+    if d == 0:
+        return unit(h, 'hour')
+    return unit(d, 'day') + (f' {unit(h, "hour")}' if h else '')
+
+
+def chance_percent(p):
+    return 'Under 1%' if p < .01 else f'{p:.0%}'
+
+
+def recommended_actions(last, history):
+    """Reasons and ordered next steps for one event, as (why, steps).
+    `last` is the latest message of the event merged with its final-tier forecast, `history` all its messages, oldest first.
+    The critical-tier steps follow the NASA conjunction assessment handbook: reduce Pc by at least
+    1.5 orders of magnitude, screen the new trajectory, coordinate with active satellites, keep an abort."""
+    trend = last.pred_log10_pc - history.pred_log10_pc.iloc[0]
+    why = [f'Final distance is forecast at about {last.miss_mid / 1e3:,.1f} km (likely {last.miss_low / 1e3:,.1f} to {last.miss_high / 1e3:,.1f} km).',
+           f'Chance of ending Critical: {chance_percent(last.chance_critical)}.']
+    if last.max_risk_estimate >= -4:
+        why.append(f'The worst-case collision chance is {chance_text(10.0 ** last.max_risk_estimate)}.')
+    if len(history) > 1 and abs(trend) >= 0.5:
+        why.append('Risk has been rising across updates.' if trend > 0 else 'Risk has been falling across updates.')
+
+    escalate = 'Move to manoeuvre planning if the chance of ending Critical rises or the distance drops below 1 km.'
+    if last.action == 'NO ACTION':
+        return why, ['Keep routine tracking. No manoeuvre is needed.']
+    if last.action == 'MONITOR':
+        return why, ['Check again when the next update arrives.', escalate]
+    if last.action == 'REVIEW':
+        return why, ['Ask an analyst to check the quality of the tracking data behind this update.',
+                     'Compare the forecast with the next update.', escalate]
+
+    speed = float(dv_required_mm_s(max(5000 - last.miss_mid, 500), last.time_to_tca))
+    who = {'PAYLOAD': 'The other object may be an active satellite. Contact its operator and agree who moves.',
+           'DEBRIS': 'The other object is debris and cannot move, so the manoeuvre is ours to make.',
+           'ROCKET BODY': 'The other object is a rocket body and cannot move, so the manoeuvre is ours to make.'}.get(
+        last.c_object_type, 'The other object is unidentified. Ask the tracking provider what it is, and assume it will not move.')
+    plan = (f'Prepare a speed change of about {speed:.1f} mm/s along the direction of travel. '
+            f'Aim for a collision chance below {chance_text(TARGET_PC)}.')
+    screen = 'Check the new path for other close approaches, then share it with the tracking provider.'
+    if last.action == 'AUTONOMOUS':
+        return why, ['Let the prepared manoeuvre run unless an operator stops it.', 'Keep the abort command ready.', who, screen]
+    first = ('Treat this as a real risk and start manoeuvre planning now.' if last.chance_critical >= .5
+             else 'Confirm with the next update before using fuel, because this is a cautious alert.')
+    if last.action == 'URGENT':
+        first = 'A person must decide now. Do not wait for another update.'
+    return why, [first, who, plan, screen]
 
 # ---------------------------------------------------------------- Monte Carlo Pc
 # Only radial sigmas are allowed inputs, so the along-track / normal sigmas and the hard-body radius are
