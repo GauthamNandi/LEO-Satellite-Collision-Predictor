@@ -49,7 +49,7 @@ python model_comparison.py   # optional, takes several minutes
 streamlit run dashboard/app.py
 ```
 `outputs/` already contains the results of the executed notebook, so the dashboard runs straight away without re-training.
-nSee the [User Guide](USER_GUIDE.md) for how to run and use the dashboard.
+See the [User Guide](USER_GUIDE.md) for how to run and use the dashboard.
 
 ## How it works
 
