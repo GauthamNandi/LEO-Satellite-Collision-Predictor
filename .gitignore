@@ -1,0 +1,8 @@
+# Hackathon datasets (too large for GitHub; get them from the Google Drive link in the problem statement)
+train_data.csv
+test_data.csv
+
+# Notebook outputs and Python cruft
+outputs/
+__pycache__/
+.ipynb_checkpoints/
