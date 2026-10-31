@@ -1,7 +1,7 @@
 # Satellite Collision Risk Evaluator
 **Autonomous SG 2026 · Airbus Track · Challenge #1: AI-driven satellite collision avoidance**
 
-Reads conjunction data messages (CDMs), predicts the collision probability `Pc` for every message, assigns the NASA/ESA risk tier from the brief, decides **who acts and how urgently** (analyst vs autonomous manoeuvre), and shows it all on an operations dashboard.
+Reads conjunction data messages (CDMs) and forecasts each event's **final risk tier** from messages at least 2 days before closest approach. It also estimates the collision probability `Pc` of every message, decides **who acts and how urgently** (analyst vs autonomous manoeuvre), suggests next actions, and shows it all on an operations dashboard.
 
 | Tier | Rule (from the brief) |
 |---|---|
@@ -34,7 +34,8 @@ final_tier_pipeline.py          official target: forecast each event's final tie
 model_comparison.py             every model family on the official target, development events only
 risk_utils.py                   shared logic: tier rules, safety net, urgency levels, Δv physics, Monte Carlo Pc
 dashboard/app.py                Streamlit operations dashboard
-outputs/                        predictions, metrics, figures, config written by the notebook (read by the dashboard)
+outputs/                        predictions, metrics, figures, config written by the notebook and scripts (read by the dashboard)
+USER_GUIDE.md                   how to run and use the dashboard
 data/                           put train_data.csv, test_data.csv and challenge1_event_labels.xlsx here (CSV files are not committed)
 ```
 
@@ -48,14 +49,14 @@ python final_tier_pipeline.py
 python model_comparison.py   # optional, takes several minutes
 streamlit run dashboard/app.py
 ```
-`outputs/` already contains the results of the executed notebook, so the dashboard runs straight away without re-training.
+`outputs/` already contains the saved results, so the dashboard runs straight away without re-training.
 See the [User Guide](USER_GUIDE.md) for how to run and use the dashboard.
 
 ## How it works
 
 1. **Recommended columns only.** `risk` history did not improve the forecast, so it is used only to score the benchmark. Tested on development events.
 2. **Event features.** Latest values plus history from messages at least 2 days out: distance range and trend, worst-case trend, shrinking uncertainty.
-3. **Forecast.** Median quantile regression predicts the final miss distance, which sets the best-guess tier. A class-balanced classifier estimates the chance of ending Critical; above a threshold (chosen on development events for the F2 score) the event is escalated.
+3. **Forecast.** LightGBM median quantile regression predicts the final miss distance, which sets the best-guess tier. A class-balanced LightGBM classifier estimates the chance of ending Critical; above a threshold (chosen on development events for the F2 score) the event is escalated.
 4. **Honest scoring.** Split by event; 20 % held out before modelling; paired bootstrap against the benchmark of carrying the current tier forward. A risk-history feature set was tried on development events and dropped.
    Every model family was compared on development events with cross-fitted thresholds (`model_comparison.py`). Random forest and LightGBM tied at the top (difference in Critical F2 not distinguishable from zero), so LightGBM stayed and the held-out events were not used for this choice.
 5. **Human vs autonomous.** Reaction budget = time to closest approach − 0.5 d to uplink and execute a burn. Critical with ≥ 1 d of budget → **PLAN**; < 1 d → **URGENT**; no budget → **AUTONOMOUS** with operator veto. Non-Critical events with at least a 10 % chance of ending Critical go to **REVIEW**.
@@ -65,8 +66,11 @@ See the [User Guide](USER_GUIDE.md) for how to run and use the dashboard.
 
 ## Limitations (stated up front)
 - Pc is **predicted**, not computed: a true Pc needs full covariances and object sizes, which are outside the recommended columns.
-- Most final Critical events are Critical through miss distance, so the forecast is mainly a distance forecast. NASA treats miss distance alone as a weak measure.
+- 895 of 908 final Critical training events (98.6 %) are Critical through miss distance alone, so the forecast is mainly a distance forecast. NASA treats miss distance alone as a weak measure.
 - The final system misses some Critical events and raises false alarms; review them rather than relying on the forecast alone.
 - Test data stops 2 days before TCA, so the AUTONOMOUS level is demonstrated on the near-TCA training history, not on test.
+- The chance of ending Critical is calibrated on training events, but that calibration has not been checked on the held-out events.
+- Events are split by event, not by mission, so performance on a new mission is untested.
+- It runs on saved data, not live messages.
 - Execution lead (0.5 d) and human decision time (1 d) are assumptions; change them in `risk_utils.py`.
 - The analyst keeps the final decision except in the autonomous window, where they keep a veto.

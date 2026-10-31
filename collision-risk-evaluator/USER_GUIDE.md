@@ -88,7 +88,14 @@ In a **Plan manoeuvre** prompt, check the first step:
 
 **Insights** shows how many past events came within 1 km and 5 km in the final 24 hours, how much time people had to react, and how waiting raises the speed change needed. These figures come from training data, because test data stops 2 days out.
 
-**Model performance** shows the models in use, the scores on events held back from training, a comparison of all the models, and where the final system was right and wrong.
+**Model performance** covers, from top to bottom:
+
+- The models in use, and why LightGBM was chosen
+- Scores on events held back from training
+- Why LightGBM shows about 88% in one place and 91% in another: it's the same system tested on different past events
+- A comparison of all the models
+- Which options have the most Critical alerts right
+- Where the final system was right and wrong
 
 | Term | Meaning |
 |---|---|
@@ -139,4 +146,7 @@ To change the assumed timings, edit `EXEC_LEAD_DAYS` and `HUMAN_MIN_DAYS` in `ri
 - **Misses and false alarms:** on held-back events, the system missed 9 of 101 Critical events, and about a third of its Critical alerts were false alarms.
 - **Estimated collision chance:** a true calculation needs full position uncertainty and object sizes, which aren't in the recommended columns.
 - **Rough speed changes:** they use a simple drift estimate and assumed timings.
+- **Untested percentages:** the chance of ending Critical is adjusted on past events, but this hasn't been checked on held-back events. Use it to rank events by urgency.
+- **New missions:** performance on a mission it hasn't seen is untested.
+- **Saved data:** it doesn't read new messages as they arrive.
 - **Human decision:** analysts keep the final call.
