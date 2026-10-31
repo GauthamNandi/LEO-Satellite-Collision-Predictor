@@ -39,6 +39,10 @@ This is the main screen.
 
 In the table, events are ranked by next step, then by their chance of ending Critical.
 
+The **globe** shows the group you've chosen. Each band is a 5° latitude band at its typical altitude, coloured by forecast tier, and a thicker band means more events. The data has no longitude, so a band means somewhere around that line, not an exact position. Drag to rotate it, and hover over a band for its details.
+
+When you open an event from the table or risk map, the globe shows **only that event**, as a single ring at its latitude and altitude. It stays that way after you close the prompt. To go back, click **Show all events** or choose another group. You can't open an event by clicking the globe.
+
 On the **risk map**, each dot is one event:
 - Further left means a smaller forecast final distance.
 - Higher means a higher collision chance now.
@@ -54,7 +58,8 @@ For Critical events, it also shows **Decide within**. This is the time left to d
 |---|---|
 | **Next actions** | Numbered steps and the reasons for them |
 | **Risk over time** | How collision chance and miss distance changed across updates |
-| **Flight path** | Where each update placed the other object at closest approach. Drag to rotate it. The spheres mark 1 km and 5 km |
+| **Flight path** | A replay of where each update placed the other object at closest approach. Press **Play** and **Pause**, or drag the slider to a specific update. You can rotate and zoom at any time, including while it plays. The replay waits while you hold the mouse button down. The spheres mark 1 km and 5 km. Events with only one update show that position, with no replay controls |
+| **Globe** | Only this event, as a ring at its latitude and altitude |
 | **Try a manoeuvre** | Choose a speed change and timing, then compare the collision chance before and after |
 
 **Try a manoeuvre** uses a Monte Carlo simulation of 2 million possible positions. Use it to compare options, because it relies on assumed uncertainties. It doesn't change the tier, so its figures can differ from the model estimate.
@@ -138,6 +143,7 @@ To change the assumed timings, edit `EXEC_LEAD_DAYS` and `HUMAN_MIN_DAYS` in `ri
 | The page doesn't open | Open http://localhost:8501 yourself, and check the terminal for errors |
 | Port 8501 is in use | Add `--server.port 8502` to the run command, then open that port |
 | Old results still show | Stop and restart the dashboard |
+| `st.iframe` error, or the replay won't load | Your Streamlit is too old. Run the install command again to update it |
 | `final_tier_pipeline.py` can't find a file | Check that all three data files are in `data/`, then run it from `collision-risk-evaluator` |
 | Scores look out of date | Rerun the steps in [Update the results](#update-the-results) |
 

@@ -34,6 +34,8 @@ final_tier_pipeline.py          official target: forecast each event's final tie
 model_comparison.py             every model family on the official target, development events only
 risk_utils.py                   shared logic: tier rules, safety net, urgency levels, Δv physics, Monte Carlo Pc
 dashboard/app.py                Streamlit operations dashboard
+dashboard/coastlines.json       coastline outlines for the globe, stored locally so it works offline
+.streamlit/config.toml          dashboard dark theme
 outputs/                        predictions, metrics, figures, config written by the notebook and scripts (read by the dashboard)
 USER_GUIDE.md                   how to run and use the dashboard
 data/                           put train_data.csv, test_data.csv and challenge1_event_labels.xlsx here (CSV files are not committed)
@@ -63,6 +65,8 @@ See the [User Guide](USER_GUIDE.md) for how to run and use the dashboard.
 6. **Next actions.** Clicking an event gives ordered steps based on the NASA handbook: reduce collision chance by at least 1.5 orders of magnitude, screen the new path, contact active operators, keep an abort.
 7. **Cost of waiting.** Along-track separation grows ≈ 3·Δv·t (Clohessy–Wiltshire), so the Δv needed scales as 1/lead time.
 8. **Monte Carlo what-if.** Samples relative position at closest approach before and after a simulated burn. A what-if tool, not the classifier.
+9. **Globe.** Events are drawn as 5° latitude bands at their typical altitude, because the data has no longitude. Opening an event narrows the globe to that event's own ring. `geocentric_latitude`, `t_h_apo` and `t_h_per` are used for this display only and never reach the models. Coastlines are from [Natural Earth](https://www.naturalearthdata.com/) (public domain).
+10. **Encounter replay.** A small embedded player updates only the moving trace, because Plotly's built-in 3D animation resets the camera on every frame. Rotating and zooming therefore keep working during playback.
 
 ## Limitations (stated up front)
 - Pc is **predicted**, not computed: a true Pc needs full covariances and object sizes, which are outside the recommended columns.

@@ -159,6 +159,11 @@ def main():
     pred['action'] = action_level(pred.forecast_tier, pred.last_t, review, pred.miss_mid)
     pred.loc[review, 'action'] = 'REVIEW'       # action_level only reviews Elevated; a likely-Critical Safe forecast needs it too
     pred['reaction_budget_days'] = reaction_budget_days(pred.last_t)
+    # display only, for the dashboard globe; the models never see these columns
+    place = pd.read_csv('data/test_data.csv', usecols=['event_id', 'time_to_tca', 'geocentric_latitude', 't_h_apo', 't_h_per'])
+    place = place.sort_values('time_to_tca').groupby('event_id').head(1).set_index('event_id')
+    pred['latitude'] = place.geocentric_latitude
+    pred['altitude_km'] = (place.t_h_apo + place.t_h_per) / 2
     pred.drop(columns='raw_critical').rename_axis('event_id').to_csv(f'{OUT}/final_tier_test.csv')
     print('test forecast:', pred.forecast_tier.value_counts().to_dict(), pred.action.value_counts().to_dict())
     with open(f'{OUT}/final_tier_config.json', 'w') as f:

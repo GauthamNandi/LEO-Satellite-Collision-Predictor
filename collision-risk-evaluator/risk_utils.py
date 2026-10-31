@@ -6,7 +6,7 @@ manoeuvre delta-v estimates and a Monte Carlo collision-probability what-if.
 import numpy as np
 
 TIERS = ['SAFE', 'ELEVATED', 'CRITICAL']
-TIER_COLORS = {'SAFE': '#2a9d8f', 'ELEVATED': '#e9a23b', 'CRITICAL': '#d1495b'}
+TIER_COLORS = {'SAFE': '#2a9d8f', 'ELEVATED': '#c28226', 'CRITICAL': '#e0527f'}
 
 # ---------------------------------------------------------------- tiers
 def tier_from(risk, miss_m, crit=-4.0, elev=-6.0):

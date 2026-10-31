@@ -7,7 +7,7 @@ xgboost>=2.0
 torch>=2.1
 matplotlib>=3.8
 seaborn>=0.13
-streamlit>=1.50
+streamlit>=1.66
 plotly>=5.20
 jupyter
 nbformat
